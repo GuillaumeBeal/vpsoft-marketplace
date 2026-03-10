@@ -1,0 +1,16 @@
+{
+  "name": "Vpsoft-Marketplace",
+  "metadata": {
+    "description": "Marketplace de skills et commandes pour le consulting autour de l'application VPSoft. Permet de trouver et utiliser des outils pour explorer et comprendre une application VPSoft via le serveur MCP. Exploration du modele de donnees, code dynamique, audit et diagnostic."
+  },
+  "owner": {
+    "name": "Guillaume Béal"
+  },
+  "plugins": [
+    {
+      "name": "vpsoft-plugin",
+      "source": "./plugins/vpsoft-plugin",
+      "description": "Outils et skills pour explorer et comprendre une application VPSoft via le serveur MCP. Exploration du modele de donnees, code dynamique, audit et diagnostic."
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "name": "vpsoft-plugin",
+  "description": "Outils et skills pour explorer et comprendre une application VPSoft via le serveur MCP. Exploration du modele de donnees, code dynamique, audit et diagnostic.",
+  "version": "1.0.1"
+}

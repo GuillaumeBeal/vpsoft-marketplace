@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vpsoft": {
+      "type": "streamable-http",
+      "url": "https://vestax.topinambour.space/mcp"
+    }
+  }
+}
