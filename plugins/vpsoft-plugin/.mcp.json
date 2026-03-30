@@ -2,7 +2,7 @@
   "mcpServers": {
     "vpsoft": {
       "type": "streamable-http",
-      "url": "https://vestax.topinambour.space/mcp"
+      "url": "https://vpsoft-mcp.stellarspace.tech/mcp"
     }
   }
 }
