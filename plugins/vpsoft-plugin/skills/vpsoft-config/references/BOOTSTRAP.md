@@ -28,8 +28,12 @@ environnement **déjà préparé** (ex. démo `demo-vesta-10-5`), elles existent
 - **Le seed `McpCreateFunction` + les helpers récents** → **ci-dessous** dans ce fichier.
 
 ## Procédure de (re)création sur un nouvel environnement
-1. **Pré-requis** : un `moduleId` (DynamicModule cible) et un `folderId` (dossier où ranger les
-   fonctions). Les résoudre via l'UI (AGL) ou `get_many_select` (`DynamicModule`, `DynamicFolder`).
+1. **Pré-requis** : le `folderId` du dossier **« API MCP »** (module `System` = Administration) où
+   **doivent vivre TOUTES les `Mcp*`** (🔴 règle utilisateur impérative). Le résoudre via
+   `get_many_select("DynamicFunction","DynamicFolder.Id","Name == \"McpCreateFunction\"")`, ou en UI
+   (Administration → API MCP). **Toujours passer ce `folderId`** à `McpCreateFunction` (prioritaire sur
+   `moduleId`) ; ne PAS passer un `moduleId` métier seul (range la fonction dans la racine du module →
+   à corriger via `McpMoveFunctionsToFolder`).
 2. **Créer le SEED `McpCreateFunction` MANUELLEMENT** (chicken-and-egg : on ne peut pas la créer via
    elle-même). Dans l'AGL VPSoft → éditeur de **DynamicFunction** (ou `/Builder`), créer une fonction
    nommée `McpCreateFunction` avec les `Parameters` / `CodeUsing` / `CodeFunction` ci-dessous, puis
@@ -559,6 +563,138 @@ try {
     sm.DynamicPageBaseService.SaveCode(vm);
     return new { success = true, code = code, finalized = fin, total = buf.Length };
 } catch (Exception ex) { return new { success = false, step = "exception", message = ex.Message, type = ex.GetType().FullName }; }
+```
+
+### `McpSetColumnWidth` — largeur Bootstrap des colonnes d'une section VISUELS (corrige le 3+1)
+- **Parameters** : `string sectionId, string classWidth` (`classWidth` = `"col"` recommandé pour N cartes sur une ligne ; cf. CONFIG-TableExtras.md §1.3 gotcha) · **CodeUsing** : `using VPSoft.Domain.Helpers;` · `using NHibernate;` · `using NHibernate.Criterion;` · `using VPSoft.Domain.Models.Builder;`
+- Passe **toutes** les colonnes (`DynamicColumnTemplate`) d'une section (`DynamicSectionTemplate.Id == sectionId`) au `ClassWidth` donné. NHibernate direct ; **aucun cache** sur ces entités → effet au prochain chargement de la liste (F5). Usage : `sectionId` = l'`Id` retourné par `McpAddTableWidget` (ou `get_many_select("DynamicSectionTemplate","Id","Code == \"MCP_…\"")`).
+
+```csharp
+var session = NHSessionHelper.GetCurrentSession();
+try
+{
+    if (string.IsNullOrWhiteSpace(sectionId) || string.IsNullOrWhiteSpace(classWidth))
+        return new { success = false, step = "args", message = "sectionId et classWidth requis" };
+    var sid = Guid.Parse(sectionId);
+    var cols = session.CreateCriteria(typeof(DynamicColumnTemplate)).CreateAlias("DynamicSectionTemplate", "s").Add(Restrictions.Eq("s.Id", sid)).List<DynamicColumnTemplate>();
+    int n = 0;
+    var olds = new System.Collections.Generic.List<string>();
+    foreach (DynamicColumnTemplate c in cols)
+    {
+        olds.Add(c.ClassWidth);
+        c.ClassWidth = classWidth;
+        session.Update(c);
+        n++;
+    }
+    session.Flush();
+    return new { success = true, sectionId = sectionId, updated = n, newClassWidth = classWidth, oldClassWidths = olds };
+}
+catch (Exception ex) { return new { success = false, step = "exception", message = ex.Message, type = ex.GetType().FullName, inner = ex.InnerException == null ? null : ex.InnerException.Message }; }
+```
+
+### `McpSetSectionRole` — rattacher une section VISUELS au BON `RoleInModule` (par module)
+- **Parameters** : `string sectionId, string roleInModuleId` (⚠️ `roleInModuleId` = le `RoleInModule.Id` du **module de l'entité**, cf. CONFIG-TableExtras.md §1.3 piège racine) · **CodeUsing** : `using VPSoft.Domain.Helpers;` · `using VPSoft.Domain.Models.Builder;` · `using VPSoft.Domain.Models.Entities.Roles;`
+- Corrige une section créée pour un rôle homonyme du **mauvais** module (visible sur la liste user mais introuvable dans l'admin Visuels). NHibernate direct ; aucun cache → effet au F5. Résoudre le bon Id : `get_many_select("RoleInModule","Id,DynamicModule.Code","Code == \"VPWAdmin\"")` → prendre la ligne du module de l'entité. (`McpAddTableWidget` est désormais corrigée pour résoudre par module → ce retrofit ne sert que pour les sections créées avant le fix.)
+
+```csharp
+var session = NHSessionHelper.GetCurrentSession();
+try
+{
+    if (string.IsNullOrWhiteSpace(sectionId) || string.IsNullOrWhiteSpace(roleInModuleId))
+        return new { success = false, step = "args", message = "sectionId et roleInModuleId requis" };
+    var sid = Guid.Parse(sectionId);
+    var rid = Guid.Parse(roleInModuleId);
+    var section = session.Get<DynamicSectionTemplate>(sid);
+    if (section == null) return new { success = false, step = "section", message = "section introuvable: " + sectionId };
+    var role = session.Get<RoleInModule>(rid);
+    if (role == null) return new { success = false, step = "role", message = "RoleInModule introuvable: " + roleInModuleId };
+    var oldRole = section.Role == null ? "null" : section.Role.Id.ToString();
+    section.Role = role;
+    session.Update(section);
+    session.Flush();
+    return new { success = true, sectionId = sectionId, oldRoleId = oldRole, newRoleId = roleInModuleId };
+}
+catch (Exception ex) { return new { success = false, step = "exception", message = ex.Message, type = ex.GetType().FullName, inner = ex.InnerException == null ? null : ex.InnerException.Message }; }
+```
+
+> **Correctif `McpAddTableWidget` (par module)** : la résolution du rôle doit être module-scopée —
+> `var moduleCode = sm.DynamicModuleService.GetDynamicModuleCodeFromEntityName(entityName);` puis
+> `rm.RoleInModuleRepository.GetMany(x => x.Code == roleCode && x.DynamicModule.Code == moduleCode).FirstOrDefault();`
+> (le code complet à jour est dans `CONFIG-TableExtras.md` §1.3).
+
+### `McpListModuleFolders` — lister les dossiers d'un module (le WHERE-on-nav échoue côté API)
+- **Parameters** : `string moduleId` · **CodeUsing** : `using VPSoft.Domain.Helpers;` · `using NHibernate;` · `using NHibernate.Criterion;` · `using VPSoft.Domain.Models.Builder;`
+- ⚠️ `get_many_select("DynamicFolder", … , where:"DynamicModule.Id == …")` renvoie **"SQL not available"** (la nav `DynamicFolder→DynamicModule` n'est pas filtrable côté API V2). Passer par NHibernate (Criteria + alias).
+
+```csharp
+var session = NHSessionHelper.GetCurrentSession();
+try
+{
+    var mid = Guid.Parse(moduleId);
+    var folders = session.CreateCriteria(typeof(DynamicFolder)).CreateAlias("DynamicModule", "m").Add(Restrictions.Eq("m.Id", mid)).List<DynamicFolder>();
+    var res = new System.Collections.Generic.List<object>();
+    foreach (DynamicFolder f in folders) res.Add(new { id = f.Id, code = f.Code, name = f.LocalizedName, parent = f.ParentFolder == null ? "ROOT" : f.ParentFolder.Id.ToString() });
+    return new { success = true, count = res.Count, folders = res };
+}
+catch (Exception ex) { return new { success = false, step = "exception", message = ex.Message, type = ex.GetType().FullName, inner = ex.InnerException == null ? null : ex.InnerException.Message }; }
+```
+
+### `McpCreateFolderMovePages` — créer un dossier nommé dans un module + y ranger des pages/widgets
+- **Parameters** : `string parentFolderId, string folderCode, string folderName, string pageCodesCsv` · **CodeUsing** : `using VPSoft.Domain.Helpers;` · `using NHibernate;` · `using VPSoft.Domain.Models.Builder;` · `using VPSoft.Domain.Models.Entities;` · `using VPSoft.Domain.Contracts.App;`
+- ⚠️ **Les pages/widgets créés via MCP atterrissent dans le dossier `API MCP` du module `System`** (héritage du dossier de `McpCreateFunction`) → pour qu'un consultant les retrouve, les **ranger dans un dossier du bon module**. Reproduit le chemin officiel `DynamicFolderController.Create` (`:49-62`) : crée le `DynamicFolder` (Code + ParentFolder + DynamicModule hérité du parent) puis pose le **nom localisé** via `CultureParameterService.SaveOrUpdate(ResourceCultureJson, folder.Id, typeof(DynamicFolder).GetProperty("LocalizedName"))` pour **toutes les cultures**. Sans CultureParameter, `DynamicFolder.LocalizedName` retombe sur `Code` (`DynamicFolder.cs:42`). `parentFolderId` = la racine du module (`McpListModuleFolders` → la ligne `parent:"ROOT"`).
+
+```csharp
+try {
+    var sm = AppDependencyResolver.GetService<IServiceManager>();
+    var rm = AppDependencyResolver.GetService<IRepositoryManager>();
+    var session = NHSessionHelper.GetCurrentSession();
+    if (string.IsNullOrWhiteSpace(parentFolderId) || string.IsNullOrWhiteSpace(folderCode)) return new { success = false, message = "parentFolderId et folderCode requis" };
+    var parent = sm.DynamicFolderService.GetSingle(Guid.Parse(parentFolderId));
+    if (parent == null) return new { success = false, message = "parent folder introuvable" };
+    if (sm.DynamicFolderService.GetCountByFilter(x => x.Code == folderCode) > 0) return new { success = false, message = "Code dossier deja utilise: " + folderCode };
+    var folder = new DynamicFolder();
+    folder.ParentFolder = parent;
+    folder.DynamicModule = parent.DynamicModule;
+    folder.Code = folderCode;
+    if (!sm.DynamicFolderService.Create(folder)) return new { success = false, message = "echec creation dossier" };
+    var rcj = new ResourceCultureJson();
+    rcj.resourceKey = "LocalizedName"; rcj.propertyName = "LocalizedName";
+    rcj.resourceValues = new System.Collections.Generic.List<ResourceCultureValueJson>();
+    foreach (Culture c in session.CreateCriteria(typeof(Culture)).List<Culture>()) rcj.resourceValues.Add(new ResourceCultureValueJson { cultureCode = c.CultureCode, resourceValue = folderName });
+    sm.CultureParameterService.SaveOrUpdate(rcj, folder.Id, typeof(DynamicFolder).GetProperty("LocalizedName"));
+    var moved = new System.Collections.Generic.List<string>();
+    foreach (var raw in pageCodesCsv.Split(',')) {
+        var code = raw.Trim(); if (code == "") continue;
+        var page = rm.DynamicPageBaseRepository.GetMany(x => x.Code == code).FirstOrDefault();
+        if (page == null) { moved.Add(code + ":NOTFOUND"); continue; }
+        page.DynamicFolder = folder; rm.DynamicPageBaseRepository.Edit(page); moved.Add(code + ":OK");
+    }
+    session.Flush();
+    return new { success = true, folderId = folder.Id, folderCode = folder.Code, folderName = folderName, moved = moved };
+} catch (Exception ex) { return new { success = false, step = "exception", message = ex.Message, type = ex.GetType().FullName, inner = ex.InnerException == null ? null : ex.InnerException.Message }; }
+```
+
+### `McpMoveFunctionsToFolder` — ranger des `Mcp*` dans le bon dossier (« API MCP »)
+- **Parameters** : `string functionNamesCsv, string folderId` · **CodeUsing** : `using VPSoft.Domain.Helpers;` · `using NHibernate;` · `using NHibernate.Criterion;` · `using VPSoft.Domain.Models.Builder;`
+- 🔴 **RÈGLE UTILISATEUR (impérative)** : **toutes les fonctions `Mcp*` doivent vivre dans le dossier « API MCP » (module `System` = Administration)**, jamais dans un module métier. À la création (`McpCreateFunction`), **passer `folderId` = l'Id « API MCP »** (prioritaire sur `moduleId`). Cette fonction **rapatrie** les fonctions mal rangées. Résoudre l'Id « API MCP » par base : `get_many_select("DynamicFunction","DynamicFolder.Id","Name == \"McpCreateFunction\"")` (démo : `d019db8c-8b9a-4922-b3d2-d3145638b1b2`). Vérif : `get_many_select("DynamicFunction","Name,DynamicFolder.LocalizedName","Name.StartsWith(\"Mcp\")")` → toutes en « API MCP ».
+
+```csharp
+var session = NHSessionHelper.GetCurrentSession();
+try {
+    if (string.IsNullOrWhiteSpace(functionNamesCsv) || string.IsNullOrWhiteSpace(folderId)) return new { success = false, message = "functionNamesCsv et folderId requis" };
+    var folder = session.Get<DynamicFolder>(Guid.Parse(folderId));
+    if (folder == null) return new { success = false, message = "folder introuvable: " + folderId };
+    var moved = new System.Collections.Generic.List<string>();
+    foreach (var raw in functionNamesCsv.Split(',')) {
+        var name = raw.Trim(); if (name == "") continue;
+        var fn = (DynamicFunction)session.CreateCriteria(typeof(DynamicFunction)).Add(Restrictions.Eq("Name", name)).UniqueResult();
+        if (fn == null) { moved.Add(name + ":NOTFOUND"); continue; }
+        var old = fn.DynamicFolder == null ? "null" : fn.DynamicFolder.Id.ToString();
+        fn.DynamicFolder = folder; session.Update(fn); moved.Add(name + ":OK(was " + old + ")");
+    }
+    session.Flush();
+    return new { success = true, folderId = folderId, folderName = folder.LocalizedName, moved = moved };
+} catch (Exception ex) { return new { success = false, step = "exception", message = ex.Message, type = ex.GetType().FullName, inner = ex.InnerException == null ? null : ex.InnerException.Message }; }
 ```
 
 ### `BdgCreate` — créer une entité dynamique AVEC références (générique)

@@ -1,6 +1,6 @@
 ---
 name: vpsoft-config
-version: 1.1.0
+version: 1.1.1
 description: >-
   Configurer VPSoft (10.5) via le MCP : tables/champs dynamiques (expression C#, formule SQL,
   reverse-link, unité, arbre + niveaux), visibilité, labels, import/export, rendu, menus par profil,
@@ -74,6 +74,13 @@ les services internes (`IServiceManager`/`IRepositoryManager`), puis on les **in
     manipuler des entités dynamiques en direct (Criteria + reflection) quand l'API REST échoue.
 - **Créer une fonction** : `McpCreateFunction(name, parameters, returnValue, codeUsing, codeFunction, isAsync, moduleId, folderId)`.
   `returnValue`=`System.Object`, `isAsync`=`false` (sauf build). Contrôle d'unicité du nom (idempotent).
+  - ⚠️ **RÈGLE : toutes les fonctions `Mcp*` doivent vivre dans le dossier « API MCP » (module System =
+    Administration), JAMAIS dans le dossier du module métier.** Donc **passer `folderId` = l'Id du dossier
+    « API MCP »** (le `folderId` est prioritaire sur le `moduleId` dans le seed) ; **ne PAS** passer un
+    `moduleId` métier seul (ça range la fonction dans la racine de ce module). L'Id du dossier est
+    **propre à chaque base** → le résoudre via une fonction Mcp existante :
+    `get_many_select("DynamicFunction","DynamicFolder.Id","Name == \"McpCreateFunction\"")`.
+    Pour rapatrier des fonctions mal rangées : **`McpMoveFunctionsToFolder(namesCsv, folderId)`**.
 - **Config vs schéma** : changements de **schéma** (table/colonne/relation, 1ʳᵉ unité) → `McpBuild()` ensuite.
   La **config** (droits, libellés, rendu, sections, menus, indicateurs, lecture seule, triggers) prend
   effet **immédiatement** (cache `[EntityCache]`), **sans rebuild**. (Faire `F5` côté UI.)
@@ -115,8 +122,9 @@ les services internes (`IServiceManager`/`IRepositoryManager`), puis on les **in
 | `McpSetFieldsUiVisibilityForRole` | Visibilité liste/create/edit **pour un profil cible** | Non |
 | `McpSetEntityCode` | **Code métier / business rules** sur l'entité (`DynamicSettings`, slots C# serveur + front) | **Oui** (slots C# serveur) |
 | `McpSetWorkflowActionCode` | **Code de transition** workflow (`EntityWorkflowAction.ValidationExpression`/`InjectionExpression`) | **Oui** |
-| `McpCreateFunction` | Créer de nouvelles DynamicFunctions | — |
+| `McpCreateFunction` | Créer de nouvelles DynamicFunctions (⚠️ toujours `folderId` = dossier « API MCP », pas le module métier) | — |
 | `McpUpdateFunctionCode` | **Mettre à jour le code** d'une DynamicFunction (PATCH générique = 500 → GetSingle+Edit) | — |
+| `McpMoveFunctionsToFolder` | **Déplacer des `Mcp*` vers le dossier « API MCP »** (`namesCsv, folderId`) — corrige les fonctions rangées par erreur dans un module métier | — |
 | `McpCreateDynamicPage` | **Page dynamique / widget / page-champ** (`DynamicPageBaseService.Create`, nom multilingue) | Non |
 | `McpRenderDynamicPage` | **Rendre une DynamicPage sans navigateur** (Razor compilé + CSS + JS, mode preview) | — |
 | `McpAttachFieldPage` | **Attacher une page-champ** aux slots `DynamicPageField{Add\|Edit\|Details}` d'un champ (+`RenderType.DynamicPage`) ; `actions="clear"` pour détacher | Non |
@@ -132,6 +140,10 @@ les services internes (`IServiceManager`/`IRepositoryManager`), puis on les **in
 | `McpDeleteRuleTree` | Supprimer un arbre isolé (orphelin, RuleSet) | — |
 | `McpDeleteBusinessRule` | **Supprimer** une business rule + ses arbres (`DeleteWithDependencies`) | Non |
 | `McpAddTableWidget` / `McpDeleteTableWidget` | **VISUELS** : rangée de cards (texte/widget) avant/après une liste, PAR RÔLE (`DynamicSectionTemplate`) | Non |
+| `McpSetColumnWidth` | **Largeur des cards VISUELS** : passe toutes les colonnes d'une section à un `ClassWidth` (ex. `"col"` pour N cartes sur une ligne — corrige le retour 3+1, cf. CONFIG-TableExtras §1.3) | Non |
+| `McpSetSectionRole` | **Rattacher une section VISUELS au BON `RoleInModule`** (par module) — corrige une section créée sous un rôle homonyme du mauvais module (visible liste user mais introuvable dans l'admin Visuels, cf. CONFIG-TableExtras §1.3) | Non |
+| `McpListModuleFolders` | **Lister les dossiers d'un module** (`DynamicFolder` via NHibernate — le `where:"DynamicModule.Id==…"` côté API V2 échoue « SQL not available ») | — |
+| `McpCreateFolderMovePages` | **Créer un dossier nommé dans un module + y ranger des pages/widgets** (les widgets créés via MCP atterrissent dans `System/API MCP` → les ranger dans le bon module ; nom localisé via `CultureParameterService.SaveOrUpdate`) | Non |
 | `McpSetTableConfidentiality` | **Confidentialité TABLE** (`IsConfidentialMaster` + maître) | Non |
 | `McpSetRecordConfidentiality` | **Confidentialité ENREGISTREMENT** (`IsConfidential` + users/roles, NH direct) | Non |
 | `McpCreateWorkflowAction` / `McpDeleteWorkflowAction` | **Transition de workflow** (statut source→cible, rôles, couleur, nom localisé) | Non |
@@ -331,10 +343,13 @@ Rendre un objet « visible » = plusieurs leviers **indépendants** :
 > Ces IDs sont **propres à la démo**. Pour un autre environnement, les résoudre dynamiquement :
 > module/folder via `get_many_select("DynamicSettings","DynamicFolder.DynamicModule.Id", "EntityName == \"…\"")`,
 > rôle via le rôle de l'utilisateur MCP courant dans le module.
-> ⚠️ **Pour `McpCreateFunction(... moduleId, folderId)`** : ces 2 IDs = là où **ranger la fonction** (module/dossier
-> des `Mcp*` existantes), **pas** le module « Migration » servant de cible d'opération. Le `f368e802` documenté
-> peut être périmé (le module hôte réel des fonctions était `831cc136…`). **Toujours les résoudre depuis une
-> fonction existante** : `get_many_select("DynamicFunction","DynamicFolder.Id,DynamicFolder.DynamicModule.Id","Name == \"McpSetEntityCode\"")`.
+> ⚠️ **Pour `McpCreateFunction(... moduleId, folderId)`** : ces 2 IDs = là où **ranger la fonction**. **RÈGLE
+> utilisateur (impérative) : TOUJOURS ranger les `Mcp*` dans le dossier « API MCP » (module `System` =
+> Administration)** → **passer `folderId`** = l'Id de ce dossier (prioritaire sur `moduleId`), **jamais** un
+> `moduleId` métier seul (sinon la fonction atterrit dans la racine du module métier — erreur à corriger via
+> `McpMoveFunctionsToFolder`). L'Id « API MCP » est **propre à chaque base** → le résoudre depuis une fonction
+> existante : `get_many_select("DynamicFunction","DynamicFolder.Id","Name == \"McpCreateFunction\"")`
+> (démo `demo-vesta-10-5` : `d019db8c-8b9a-4922-b3d2-d3145638b1b2`).
 
 ## 8. Vérification systématique (en base)
 
@@ -586,9 +601,15 @@ L'essentiel :
 
 - **VISUELS (cards au-dessus/en-dessous des listes)** : `DynamicSectionTemplate` (rangée, **par rôle**,
   `IsBeforeTable`) + `DynamicColumnTemplate` (card : Text=1 HTML / **Widget=2** = Id d'un DynamicWidget /
-  Image=3 / File=4, `ClassWidth` Bootstrap). Rendu filtré sur les rôles de l'utilisateur ; un widget
-  est chargé par `/Users/Page?id=<widgetId>`. → `McpAddTableWidget(entity, roleCode, before, pos,
-  '[{"type":"widget","content":"<CodeWidget>","classWidth":"col-md-4"},…]')` ✅ / `McpDeleteTableWidget`.
+  Image=3 / File=4, `ClassWidth` Bootstrap). Rendu **liste utilisateur** filtré sur les rôles de
+  l'utilisateur ; un widget est chargé par `/Users/Page?id=<widgetId>`. → `McpAddTableWidget(entity,
+  roleCode, before, pos, '[{"type":"widget","content":"<CodeWidget>"},…]')` ✅ / `McpDeleteTableWidget`.
+  ⚠️ **`classWidth` : pour N cards sur UNE ligne, utiliser `"col"`** (le défaut), **pas `col-md-N`** : le
+  rendu est `row …gap-2`, donc 4×`col-md-3` (=100%) **+ les gaps débordent → 3+1**. Retrofit d'une section
+  existante : `McpSetColumnWidth(sectionId, "col")`. ⚠️ **`RoleInModule` est PAR MODULE** : `McpAddTableWidget`
+  doit résoudre le rôle **dans le module de l'entité** (sinon section visible sur la liste user mais
+  INTROUVABLE dans l'admin Visuels, qui filtre sur le `RoleInModule.Id` du bon module). Helper corrigé ✅ ;
+  retrofit d'une section mal rattachée : `McpSetSectionRole(sectionId, <bon RoleInModule.Id>)`. (détails → CONFIG-TableExtras §1.3).
   **Pattern consultant ⭐ carte KPI cliquable qui préfiltre** : widget Razor (`VP.Entities.GetCount`)
   + JS au clic → `$(".dynamicListContainer").jtable("load", { jsonFilters: JSON.stringify([filtre]) })`.
   ⚠️ **Forme EXACTE du filtre (validée en prod 10.5)** : `{entityPropertyName:"Status", operator:"=", value:"2",

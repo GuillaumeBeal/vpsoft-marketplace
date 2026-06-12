@@ -48,8 +48,11 @@ try {
     var rm = AppDependencyResolver.GetService<IRepositoryManager>();
     var ds = rm.DynamicSettingsRepository.GetMany(x => x.EntityName == entityName && x.ViewName == null).FirstOrDefault();
     if (ds == null) return "ERR DynamicSettings introuvable: " + entityName;
-    var role = rm.RoleInModuleRepository.GetMany(x => x.Code == roleCode).FirstOrDefault();
-    if (role == null) return "ERR RoleInModule introuvable (Code): " + roleCode;
+    // ⚠️ RoleInModule est PAR MODULE : résoudre le rôle DANS le module de l'entité (sinon on attrape
+    // le 1ᵉʳ rôle homonyme d'un AUTRE module → invisible dans l'admin Visuels, cf. §1.3 gotcha #2).
+    var moduleCode = sm.DynamicModuleService.GetDynamicModuleCodeFromEntityName(entityName);
+    var role = rm.RoleInModuleRepository.GetMany(x => x.Code == roleCode && x.DynamicModule.Code == moduleCode).FirstOrDefault();
+    if (role == null) return "ERR RoleInModule introuvable (Code '" + roleCode + "' dans le module '" + moduleCode + "' de l'entite " + entityName + ")";
     var section = new DynamicSectionTemplate();
     section.Code = "MCP_" + Guid.NewGuid().ToString("N").Substring(0, 8);
     section.DynamicSettings = ds; section.Role = role;
@@ -92,6 +95,57 @@ try {
 vérifiée en base (Text + Widget) — **visible au-dessus de la liste McpDemoVehicule** pour le rôle.
 ⚠️ Le `roleCode` = `RoleInModule.Code` (souvent un GUID-like, ex. `228B4CB4-…`) ; un même Code peut
 exister dans plusieurs modules. La carte n'apparaît que pour les **utilisateurs ayant ce rôle**.
+
+#### ⚠️ Gotchas VISUELS (incidents réels — démo Bdg)
+
+1. **`classWidth` & retour à la ligne** : le rendu (`Dynamic/Index.cshtml:95`) crée la section en
+   **`<div class="row mx-0 flex-wrap gap-2">`** et chaque colonne en
+   **`<div class="${ClassWidth} bg-white rounded p-3 …">`** (ligne 100). Le `gap-2` (0,5rem entre
+   colonnes) **s'ajoute** à la largeur des colonnes. Donc **N cartes en `col-md-(12/N)` débordent** :
+   4×`col-md-3` = 100% **+ 3 gaps de 0,5rem ⇒ la 4ᵉ carte passe à la ligne (3+1)**. ✅ **Solution :
+   utiliser `"col"`** (flex-fill : les N cartes se partagent `largeur − gaps`, toutes sur **une seule
+   ligne**). C'est **déjà le défaut** de `McpAddTableWidget` (`it["classWidth"] ?? "col"`) → **ne PAS
+   forcer `col-md-N`** pour une rangée de quickfilters ; omettre `classWidth` (ou mettre `"col"`).
+   *Retrofit d'une section existante* → **`McpSetColumnWidth(sectionId, "col")`** (cf. BOOTSTRAP.md) :
+   passe toutes les colonnes d'une section à un `ClassWidth` donné (NHibernate direct ; aucun cache sur
+   `DynamicSectionTemplate`/`DynamicColumnTemplate` → effet immédiat au prochain chargement, F5).
+
+2. **Onglet admin VISUELS = filtré PAR RÔLE SÉLECTIONNÉ** (≠ liste utilisateur). La liste **utilisateur**
+   (`Dynamic/Index.cshtml:78` → `AGL/GetCToolsTemplateConfigByRole`) affiche les sections des **rôles de
+   l'utilisateur courant**. Mais l'onglet **admin** « Visuels » appelle
+   `CToolsController.GetCToolsTemplateConfigByRole(dynamicSettingsId, **roleId**)` →
+   `DynamicSectionTemplateService.GetDynamicSectionTemplateFormModelList(ds, roleId)` qui filtre
+   `x.Role.Id == roleId` (`DynamicSectionTemplateService.cs:238`). Le **roleId** vient du sélecteur de
+   rôle de l'onglet, peuplé par `RoleService.GetAllRolesInModuleFromEntity(entityName)`
+   (`CToolsController.cs:291`) ⇒ **les `RoleInModule` du module de l'entité** uniquement.
+
+   ⚠️ **PIÈGE RACINE (`RoleInModule` est PAR MODULE)** : un même `Code` (ex. `VPWAdmin`) existe **une fois
+   par module** (Bdg, Legal, Portfolio…), chacun avec un `Id` différent. L'ancienne `McpAddTableWidget`
+   résolvait le rôle par `GetMany(x => x.Code == roleCode).FirstOrDefault()` (**global**) → elle attrapait
+   le 1ᵉʳ homonyme (souvent un AUTRE module). Résultat **observé** : la section **s'affiche bien sur la
+   liste utilisateur** (le rendu filtre sur `roleInModuleIds.Contains(x.Role.Id)` = TOUS les rôles de
+   l'user, donc le mauvais module passe quand même) **mais reste INTROUVABLE dans l'admin Visuels même en
+   sélectionnant le bon nom de rôle** (l'admin envoie le `RoleInModule.Id` du **bon module**, qui ≠ celui
+   stocké). ✅ **Fix appliqué** : `McpAddTableWidget` résout désormais le rôle **dans le module de
+   l'entité** (`x.Code == roleCode && x.DynamicModule.Code == moduleCode`, via
+   `DynamicModuleService.GetDynamicModuleCodeFromEntityName`). ✅ **Retrofit d'une section existante mal
+   rattachée** : `McpSetSectionRole(sectionId, <RoleInModule.Id du BON module>)` (cf. BOOTSTRAP.md).
+   Diagnostic : comparer `get_many_select("DynamicSectionTemplate","Role.Id,Role.Code","Id==Guid(\"…\")")`
+   au `get_many_select("RoleInModule","Id,DynamicModule.Code","Code==\"VPWAdmin\"")` (repérer la ligne du
+   module de l'entité).
+
+3. **Nommage & rangement des widgets de carte.** Dans la grille de config Visuels, la **carte d'un widget
+   affiche l'`Id` (GUID) du DynamicWidget** (`ctools.js` pose `column.Content`) — c'est le rendu de la SPA
+   admin compilée, **non modifiable par config**. Le **nom** du widget (`LocalizedName`) apparaît en
+   revanche dans le **sélecteur** de la modale d'édition de la carte (`DynamicPageList`) et dans
+   **l'arborescence des pages/widgets**. ⇒ donner des `LocalizedName` clairs aux widgets (sinon le
+   consultant ne s'y retrouve pas). ⚠️ **Les widgets créés via MCP sont rangés dans le dossier `API MCP`
+   du module `System`** → les **déplacer dans un dossier du module métier** : `McpCreateFolderMovePages`
+   (cf. BOOTSTRAP.md) crée un dossier nommé sous la racine du module (`McpListModuleFolders` pour trouver
+   la racine, `parent:"ROOT"`) et y déplace les widgets par Code. ✅ Vérif : `get_many_select(
+   "DynamicPageBase","Code,LocalizedName,DynamicFolder.LocalizedName,DynamicFolder.DynamicModule.Code",
+   "Code.StartsWith(\"…\")")`. Déplacer un widget ne change ni son `Id` ni ses `RoleInModules` → le rendu
+   des cartes et le préfiltre restent intacts.
 
 ### 1.4 Pattern consultant : CARTE KPI CLIQUABLE QUI PRÉFILTRE la liste ⭐
 
