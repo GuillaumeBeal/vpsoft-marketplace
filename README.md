@@ -6,7 +6,7 @@ Marketplace de plugins Claude Code pour le consulting autour de l'application VP
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **vpsoft-plugin** | 1.1.1 | Outils et skills pour explorer, comprendre et configurer une application VPSoft via le serveur MCP. Exploration du modèle de données, code dynamique, audit/diagnostic, et configuration (tables/champs, menus, filtres, indicateurs, dashboards, workflows, pages dynamiques, business rules). |
+| **vpsoft-plugin** | 1.1.2 | Outils et skills pour explorer, comprendre et configurer une application VPSoft via le serveur MCP. Exploration du modèle de données, code dynamique, audit/diagnostic, et configuration (tables/champs, menus, filtres, indicateurs, dashboards, workflows, pages dynamiques, business rules). |
 
 ### Skills inclus
 
@@ -41,7 +41,7 @@ Puis installez le plugin :
 ├── plugins/
 │   └── vpsoft-plugin/
 │       ├── .claude-plugin/
-│       │   └── plugin.json         # Manifest du plugin (v1.1.1)
+│       │   └── plugin.json         # Manifest du plugin (v1.1.2)
 │       ├── .mcp.json               # Configuration MCP VPSoft
 │       └── skills/
 │           ├── consulting-vpsoft/

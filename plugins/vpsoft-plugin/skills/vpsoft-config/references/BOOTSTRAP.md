@@ -697,6 +697,29 @@ try {
 } catch (Exception ex) { return new { success = false, step = "exception", message = ex.Message, type = ex.GetType().FullName, inner = ex.InnerException == null ? null : ex.InnerException.Message }; }
 ```
 
+### `McpSetPageName` — renommer une page/widget (LocalizedName, toutes cultures, 1 appel)
+- **Parameters** : `string pageCode, string value` · **CodeUsing** : `using VPSoft.Domain.Helpers;` · `using NHibernate;` · `using NHibernate.Criterion;` · `using VPSoft.Domain.Models.Builder;` · `using VPSoft.Domain.Models.Entities;`
+- Pose/maj le `LocalizedName` (CultureParameter `PropertyName="LocalizedName"`) d'une `DynamicPageBase` (page/widget/page-champ) résolue par `Code`, **pour toutes les cultures** (boucle `Culture`), match par `(ParameterId, PropertyName, Culture)` → update sinon create (même logique que `McpUpsertLocalizedName`, mais 1 appel au lieu d'un par culture). ⚠️ N'affecte PAS les libellés KPI internes du widget (codés dans son Razor) ni la vignette de la carte Visuels (qui montre le GUID).
+
+```csharp
+try {
+    var session = NHSessionHelper.GetCurrentSession();
+    var rm = AppDependencyResolver.GetService<IRepositoryManager>();
+    if (string.IsNullOrWhiteSpace(pageCode)) return new { success = false, message = "pageCode requis" };
+    var page = rm.DynamicPageBaseRepository.GetMany(x => x.Code == pageCode).FirstOrDefault();
+    if (page == null) return new { success = false, message = "page introuvable: " + pageCode };
+    var pid = page.Id; int upd = 0, cre = 0;
+    foreach (Culture culture in session.CreateCriteria(typeof(Culture)).List<Culture>()) {
+        CultureParameter cp = null;
+        foreach (CultureParameter x in session.CreateCriteria(typeof(CultureParameter)).Add(Restrictions.Eq("ParameterId", pid)).Add(Restrictions.Eq("PropertyName", "LocalizedName")).Add(Restrictions.Eq("Culture", culture)).List()) { cp = x; break; }
+        if (cp != null) { cp.Name = value; session.Update(cp); upd++; }
+        else { cp = new CultureParameter(); cp.Name = value; cp.Culture = culture; cp.ParameterId = pid; cp.PropertyName = "LocalizedName"; cp.EntityName = "DynamicPageBase"; cp.IsOriginalTranslate = false; cp.AglxId = Guid.NewGuid(); session.Save(cp); cre++; }
+    }
+    session.Flush();
+    return new { success = true, pageCode = pageCode, value = value, updated = upd, created = cre };
+} catch (Exception ex) { return new { success = false, message = ex.Message, type = ex.GetType().FullName, inner = ex.InnerException == null ? null : ex.InnerException.Message }; }
+```
+
 ### `BdgCreate` — créer une entité dynamique AVEC références (générique)
 - **Parameters** : `string entityName, string fieldsJson` (objet JSON `{champ:valeur}`) · **CodeUsing** : `using NHibernate;` · `using NHibernate.Criterion;` · `using VPSoft.Domain.Helpers;` · `using VPSoft.Domain.Helpers.Extensions;`
 - ⚠️ À appeler côté page via `VP.Functions.Invoke("BdgCreate",[entityName, JSON.stringify(data)])`. `VP.Entities.Create` (endpoint V2) ne lie PAS les références (cf. CODE-DynamicPages §13). Réf = champ chargé par `Code` ; enum = int ; Code auto si absent ; audit posé. (Nom « Bdg » historique — générique : renommer en `McpCreateEntity` au besoin.)

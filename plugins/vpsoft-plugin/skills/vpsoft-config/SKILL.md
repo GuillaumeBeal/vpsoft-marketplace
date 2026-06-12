@@ -1,6 +1,6 @@
 ---
 name: vpsoft-config
-version: 1.1.1
+version: 1.1.2
 description: >-
   Configurer VPSoft (10.5) via le MCP : tables/champs dynamiques (expression C#, formule SQL,
   reverse-link, unité, arbre + niveaux), visibilité, labels, import/export, rendu, menus par profil,
@@ -144,6 +144,7 @@ les services internes (`IServiceManager`/`IRepositoryManager`), puis on les **in
 | `McpSetSectionRole` | **Rattacher une section VISUELS au BON `RoleInModule`** (par module) — corrige une section créée sous un rôle homonyme du mauvais module (visible liste user mais introuvable dans l'admin Visuels, cf. CONFIG-TableExtras §1.3) | Non |
 | `McpListModuleFolders` | **Lister les dossiers d'un module** (`DynamicFolder` via NHibernate — le `where:"DynamicModule.Id==…"` côté API V2 échoue « SQL not available ») | — |
 | `McpCreateFolderMovePages` | **Créer un dossier nommé dans un module + y ranger des pages/widgets** (les widgets créés via MCP atterrissent dans `System/API MCP` → les ranger dans le bon module ; nom localisé via `CultureParameterService.SaveOrUpdate`) | Non |
+| `McpSetPageName` | **Renommer une page/widget** (`pageCode, value`) — pose le `LocalizedName` (CultureParameter) sur **toutes les cultures** en 1 appel (≠ `McpUpsertLocalizedName` qui est par culture) | Non |
 | `McpSetTableConfidentiality` | **Confidentialité TABLE** (`IsConfidentialMaster` + maître) | Non |
 | `McpSetRecordConfidentiality` | **Confidentialité ENREGISTREMENT** (`IsConfidential` + users/roles, NH direct) | Non |
 | `McpCreateWorkflowAction` / `McpDeleteWorkflowAction` | **Transition de workflow** (statut source→cible, rôles, couleur, nom localisé) | Non |
