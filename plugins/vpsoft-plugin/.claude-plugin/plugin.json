@@ -1,5 +1,5 @@
 {
   "name": "vpsoft-plugin",
-  "description": "Outils et skills pour explorer et comprendre une application VPSoft via le serveur MCP. Exploration du modele de donnees, code dynamique, audit et diagnostic.",
-  "version": "1.0.2"
+  "description": "Outils et skills pour explorer, comprendre ET configurer une application VPSoft via le serveur MCP. Exploration du modele de donnees, code dynamique, audit/diagnostic, et configuration (tables/champs, menus, filtres, indicateurs, dashboards, workflows, pages dynamiques interactives, business rules).",
+  "version": "1.1.0"
 }
