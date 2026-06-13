@@ -149,46 +149,77 @@ exister dans plusieurs modules. La carte n'apparaît que pour les **utilisateurs
 
 ### 1.4 Pattern consultant : CARTE KPI CLIQUABLE QUI PRÉFILTRE la liste ⭐
 
-Le combo : un **DynamicWidget** (KPI Razor via `VP.Entities.GetCount`) + un **JS au clic** qui recharge la
-jTable avec `jsonFilters`. Flux serveur : `listAction` → `/Agl/GetDynamicEntitiesByFilter`
-(`DynamicController`) → `DynamicService.GetEntitiesByFilter` → **`RepositoryReflectionHelper.CreateMultiLambaExpressionBase`**.
+Combo : un **DynamicWidget** (KPI Razor via `VP.Entities.GetCount`) + un **JS au clic** qui applique un filtre.
 
-⚠️ **FORME EXACTE D'UN FILTRE — validée en prod 10.5** (le serveur lit ces clés, cf. `VPSoft.Domain/Utils/FilterQuery.cs`) :
+🔴 **LE BON PATTERN = persister le filtre côté SERVEUR (session) puis recharger.** ⚠️ **NE PAS** se contenter
+d'un `$(".dynamicListContainer").jtable("load",{jsonFilters})` côté client : ça filtre l'affichage mais **ne
+persiste PAS au F5** et **n'affiche NI le bandeau de filtres NI le compteur**. Mécanisme natif (repris de
+`dynamicFilters.js:saveAndApplyFilter`), **validé end-to-end prod 10.5** :
+
+1. **Persister** : `POST /Api/DynamicFilters/SetFiltersSession {EntityName, ViewName, JsonFilters}` →
+   `FilterHelper.SetFilters` stocke en **session** (`DynamicFiltersController.cs:41`). « Tout effacer » =
+   `POST /Api/DynamicFilters/ResetTableFilterSession {EntityName, ViewName}`.
+2. **Rafraîchir SANS recharger la page** (préféré — validé) : `$('.dynamicListContainer').jtable('load')` (sans
+   argument → relit la session côté serveur, `reLoadAfterFilterChange`) PUIS reconstruire le **bandeau de chips +
+   le compteur** comme `saveAndApplyFilter` (`:272-317`). 🔴 **GOTCHA** : pour rendre le bandeau visible, faire
+   **`bannerEl.classList.remove('d-none')`** sur `[entity-filters-banner]` — **NE PAS ajouter `d-flex`** (ça
+   transforme l'élément en flex → le conteneur interne tombe à ~380px → `updateFiltersBanner` croit que le chip
+   déborde et l'affiche en « +1 » au lieu de l'afficher inline). Reset = `bannerEl.classList.add('d-none')`.
+   Code complet ci-dessous. *(Alternative simple mais avec flash : `location.reload()` — au chargement le serveur
+   rerend liste+bandeau+compteur depuis la session, `global/filters.js:673-707` ; c'est ce que fait le filtre
+   sauvegardé natif `applySaveFilter`.)*
+
+⚠️ **FORMAT DU FILTRE = sortie de `serializeFilters`** (ce que le modal natif POST ; à matcher pour que le chip
+s'affiche). Lire la vraie ligne de filtre dans le DOM : `[filters-table] div[id*="opts_"]` donne
+`entityPropertyName, displayName, valueType, isKeysValues, isForeignKey, propertyType` ; la `<select values_>`
+donne les valeurs (= **TechnicalName**, ex. `Ordered`). Pour un **enum multi-select** (`valueType:"multi_enum"`,
+select `multiple`) → `value`/`text` = **`[TechnicalName]`** (crochets car multiple ; PAS l'int), `operator:"="`,
+`isKeysValues:"false"` :
 ```json
-{"entityPropertyName":"Status","operator":"=","value":"2","text":"Commandé",
- "isKeysValues":"false","valueType":"multi_enum","propertyType":"","foreignEntityPropertyType":"",
- "isForeignKey":"false","foreignEntityPropertyName":"","cultureCode":"","parameterName":""}
+[{"entityPropertyName":"Status","operator":"=","propertyType":"","foreignEntityPropertyType":"",
+  "isForeignKey":"false","isKeysValues":"false","foreignEntityPropertyName":"null","displayName":"Statut",
+  "cultureCode":"","parameterName":"","valueType":"multi_enum","value":"[Ordered]","text":"[Ordered]"}]
 ```
-- **`operator` = un SYMBOLE**, jamais un mot (`filters.js` `operatorFilterByType`) : `=` égal · `!` différent ·
-  `~` contient · `!~` ne contient pas · `!*` vide · `>` `>=` `<` `<=` · `><` entre. (Les vieilles notes
-  `operator:"equal"`/`"contain"` étaient FAUSSES → renvoyaient « Une erreur est survenue ».)
-- **Clé `type` ≠ `valueType`** : le serveur lit **`type`** (`FilterQuery.TYPE_KEY="type"`). `valueType` (envoyé par
-  serializeFilters) est ignoré côté bind → inoffensif, mais ne PAS compter dessus.
-- **ENUM dynamique** : filtrer par la **valeur INT** (`Status==2`), `operator:"="`, **`isKeysValues:"false"`**.
-  ⚠️ **PIÈGE MAJEUR** : `isKeysValues:"true"` est réservé aux **tree-data** (TreePerimeterIn/Of) ; sur un enum il
-  force `value = text` (`RepositoryReflectionHelper.cs:549-560`) → `Enum.Parse("Commandé")` plante → KO. Les
-  valeurs/labels d'un enum = `DynamicMultiEnumValues` (`Value` int, `TechnicalName` ; lié au `DynamicMultiEnum`
-  `Name`=`<Entité><Prop>`, ex. `BdgCommitmentStatus`).
-- **Référence** : `isForeignKey:"true"`, `foreignEntityPropertyName`=prop affichée, `value`=Id/code de la cible.
+- **`operator` = SYMBOLE** (`filters.js`) : `=` · `!` différent · `~` contient · `!~` · `!*` vide · `>` `>=` `<` `<=` · `><` entre.
+- ⚠️ **`isKeysValues:"true"` réservé aux tree-data** (sinon force `value=text` → `Enum.Parse` plante, `RepositoryReflectionHelper.cs:549-560`). Valeurs/labels enum = `DynamicMultiEnumValues` (`Value` int, `TechnicalName`) lié au `DynamicMultiEnum` `Name=<Entité><Prop>` (ex. `BdgCommitmentStatus`).
+- **Référence** : `isForeignKey:"true"`, `foreignEntityPropertyName`=prop affichée, `value`=Id/code cible.
 
-**Widget « carte qui préfiltre »** (CodeRazor + CodeJavascript du DynamicWidget) :
+**Widget « carte qui préfiltre »** (CodeRazor + CodeJavascript) :
 ```razor
 @{ int nb = VP.Entities.GetCount("BdgCommitment", "EntityState == EntityState.Active && Status == 2"); }
 <div id="qf2" class="kpi-card" style="cursor:pointer"><h2>@nb</h2><span>Commandé — cliquer pour filtrer</span></div>
 ```
 ```javascript
+// SET (sans reload) — globaux dispo sur la page liste : postAsync, appBaseURL, $, resolveFilterBannerContainer,
+// Handlebars, operatorLabels, ReplaceAsciiCodes, filterTypeToIcon, updateFiltersBanner, jErrorBox
 (function(){var el=document.getElementById('qf2');if(!el)return;el.addEventListener('click',function(){
-  var f=[{entityPropertyName:"Status",operator:"=",value:"2",text:"Commandé",isKeysValues:"false",
-    valueType:"multi_enum",propertyType:"",foreignEntityPropertyType:"",isForeignKey:"false",
-    foreignEntityPropertyName:"",cultureCode:"",parameterName:""}];
-  $(".dynamicListContainer").jtable("load",{jsonFilters:JSON.stringify(f)});});})();
+  var en='BdgCommitment',vn='';
+  var f=[{entityPropertyName:'Status',operator:'=',propertyType:'',foreignEntityPropertyType:'',isForeignKey:'false',
+    isKeysValues:'false',foreignEntityPropertyName:'null',displayName:'Statut',cultureCode:'',parameterName:'',
+    valueType:'multi_enum',value:'[Ordered]',text:'[Ordered]'}];
+  postAsync(appBaseURL+'/Api/DynamicFilters/SetFiltersSession',{EntityName:en,ViewName:vn,JsonFilters:JSON.stringify(f)})
+   .then(function(){
+     $('.dynamicListContainer').jtable('load');                       // relit la session (pas d'arg)
+     var fbc=resolveFilterBannerContainer(document.querySelector('.dynamicFiltersModal'));
+     var b=fbc.querySelector('[entity-filters-banner]');
+     var tm=Handlebars.compile(document.getElementById('table-filter-banner-badge').innerHTML);
+     var tg=fbc.querySelector('[table-filters-banner-tags]');tg.innerHTML='';
+     var sn=fbc.querySelector('[selectedDynamicFiltersNumber]');if(sn){sn.textContent=String(f.length);sn.setAttribute('value',sn.textContent);}
+     f.forEach(function(fo){var t=fo.text;if(t.charAt(0)==='['&&t.slice(-1)===']')t=t.slice(1,-1);
+       var ol=operatorLabels[fo.operator]||fo.operator,tv=ReplaceAsciiCodes(t).split(',').map(function(v){return v.trim();}).join(', ');
+       tg.insertAdjacentHTML('beforeend',tm({name:fo.displayName,propertyName:fo.entityPropertyName,entityName:en,viewName:vn,operator:ol,tooltip:fo.displayName+' '+ol+' '+tv,value:tv,icon:filterTypeToIcon(fo.valueType)}));});
+     b.classList.remove('d-none');                                    // ⚠️ remove d-none, JAMAIS add d-flex
+     updateFiltersBanner(fbc.querySelector('[table-filters-banner-container]'));
+   }).catch(function(e){if(typeof jErrorBox==='function')jErrorBox((e&&e.ErrorMessage)||'Erreur',e);});});})();
 ```
-- Carte « Tous » (réinitialiser) : `$(".dynamicListContainer").jtable("load",{jsonFilters:"[]"})`.
-- ⚠️ **Chaque widget = son propre `id`** (`#qf2`, `#qf4`…) et son JS scopé à cet id — sinon les JS de plusieurs
-  cartes se chevauchent (chaque widget rend `<style>`+`<div>`+`<script>` indépendamment, chargé par `/Users/Page?id=`).
-- Compteur Razor : `VP.Entities.GetCount("Entité","Status == 2")` (l'int fonctionne). Tester sans navigateur via
-  **`McpRenderDynamicPage`**. Bannière de filtres déjà affichée → helper `reloadJtableWithFilter(tableContainer, cacheKey)`
-  (`filters.js:231`). Préfiltre 100% serveur → `DefaultFilters` sur la vue (§1.5).
+- **Carte « Tous » (reset, sans reload)** : `ResetTableFilterSession` + `jtable('load')` + vider `[table-filters-banner-tags]` + compteur=`0` + **`bannerEl.classList.add('d-none')`** + `updateFiltersBanner(...)`.
+- `postAsync`, `appBaseURL`, `jErrorBox`, `$` sont **globaux** sur la page liste (widget chargé via `/Users/Page?id=`).
+- ⚠️ **Chaque widget = son propre `id`** + JS scopé (chaque widget rend `<style>`+`<div>`+`<script>` indépendamment).
+- Le **compteur KPI Razor** (`GetCount`, l'INT marche en C#) reste le TOTAL par statut — inchangé par le filtre actif.
+- ⚠️ `SetFiltersSession` **REMPLACE** tous les filtres de l'entité/vue (un quickfilter écrase les autres). Pour cumuler, lire+fusionner les filtres existants avant.
+- Tester le rendu du widget sans navigateur : **`McpRenderDynamicPage`**.
+
+> **2 formats de valeur enum (selon le chemin)** : via **`SetFiltersSession`** (chemin natif, recommandé) → `value`=**TechnicalName** `"[Ordered]"`. Via un `jtable("load",{jsonFilters})` **DIRECT** (`/Agl/GetDynamicEntitiesByFilter` → `RepositoryReflectionHelper.CreateMultiLambaExpressionBase`) → l'**INT** `"2"` marche aussi. Le serveur lit la clé **`type`** (≠ `valueType`, `FilterQuery.cs`).
 
 ### 1.5 FILTRES de liste (rendre des colonnes cherchables dans le bandeau) ✅
 

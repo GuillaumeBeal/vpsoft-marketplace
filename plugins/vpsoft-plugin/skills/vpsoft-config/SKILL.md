@@ -1,6 +1,6 @@
 ---
 name: vpsoft-config
-version: 1.1.2
+version: 1.1.3
 description: >-
   Configurer VPSoft (10.5) via le MCP : tables/champs dynamiques (expression C#, formule SQL,
   reverse-link, unité, arbre + niveaux), visibilité, labels, import/export, rendu, menus par profil,
@@ -611,15 +611,17 @@ L'essentiel :
   doit résoudre le rôle **dans le module de l'entité** (sinon section visible sur la liste user mais
   INTROUVABLE dans l'admin Visuels, qui filtre sur le `RoleInModule.Id` du bon module). Helper corrigé ✅ ;
   retrofit d'une section mal rattachée : `McpSetSectionRole(sectionId, <bon RoleInModule.Id>)`. (détails → CONFIG-TableExtras §1.3).
-  **Pattern consultant ⭐ carte KPI cliquable qui préfiltre** : widget Razor (`VP.Entities.GetCount`)
-  + JS au clic → `$(".dynamicListContainer").jtable("load", { jsonFilters: JSON.stringify([filtre]) })`.
-  ⚠️ **Forme EXACTE du filtre (validée en prod 10.5)** : `{entityPropertyName:"Status", operator:"=", value:"2",
-  text:"Commandé", isKeysValues:"false", valueType:"multi_enum", propertyType:"", isForeignKey:"false",
-  foreignEntityPropertyName:"", foreignEntityPropertyType:"", cultureCode:"", parameterName:""}`. Le serveur
-  (`RepositoryReflectionHelper.CreateMultiLambaExpressionBase`) lit la clé **`type`** (PAS `valueType`) et
-  **`isKeysValues`** : un **ENUM se filtre par sa valeur INT** avec `operator:"="` et **`isKeysValues:"false"`**.
-  ⚠️ `isKeysValues:"true"` est réservé aux **tree-data** (Operator.TreePerimeterIn/Of) — sinon il force `value=text`
-  puis `Enum.Parse(text)` plante → `/Agl/GetDynamicEntitiesByFilter` renvoie KO « Une erreur est survenue ».
+  **Pattern consultant ⭐ carte KPI cliquable qui préfiltre** : widget Razor (`VP.Entities.GetCount`) + JS au clic.
+  🔴 **LE BON PATTERN = persister le filtre en session puis recharger** (PAS un `jtable("load",{jsonFilters})`
+  client-only qui ne persiste pas au F5 et n'affiche ni bandeau ni compteur) : `POST /Api/DynamicFilters/SetFiltersSession
+  {EntityName, ViewName, JsonFilters}` puis rafraîchir. **Préféré (sans reload, validé)** : `$('.dynamicListContainer').jtable('load')`
+  (relit la session) + reconstruire le bandeau de chips comme `saveAndApplyFilter` — 🔴 pour montrer le bandeau faire
+  **`bannerEl.classList.remove('d-none')`** (PAS `add('d-flex')` qui collapse la largeur → chip en « +1 »). Variante simple : `location.reload()`
+  (le serveur rerend tout depuis la session). « Tous » = `ResetTableFilterSession` (+ `add('d-none')` si sans reload). Format = sortie de
+  `serializeFilters` ; **enum multi-select** : `value`/`text`=**`[TechnicalName]`** (ex. `"[Ordered]"`, crochets car
+  select multiple, PAS l'int), `operator:"="`, `isKeysValues:"false"`, `valueType:"multi_enum"`, `displayName`.
+  ⚠️ `isKeysValues:"true"` = tree-data only (sinon `value=text`→`Enum.Parse` plante). *(Chemin DIRECT `jtable load`→`GetDynamicEntitiesByFilter` :
+  l'INT `value:"2"` marche aussi ; serveur lit la clé `type`, pas `valueType`.)* Détails + code widget → CONFIG-TableExtras §1.4.
   (Les anciennes notes `operator:"equal"` étaient FAUSSES.) Carte « Tous » = recharger avec `jsonFilters:"[]"`.
   Constantes : `FilterQuery.cs` (`TYPE_KEY="type"`, `ISKEYSVALUES="isKeysValues"`, `PROPERTY_VALUE_KEY="value"`).
 - **FILTRES de liste (bandeau de recherche)** : une colonne devient filtrable ⟺ **`DynamicFieldRole.Filter=true`**
