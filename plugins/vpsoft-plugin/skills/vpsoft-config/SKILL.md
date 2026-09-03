@@ -1,6 +1,6 @@
 ---
 name: vpsoft-config
-version: 1.1.3
+version: 1.1.4
 description: >-
   Configurer VPSoft (10.5) via le MCP : tables/champs dynamiques (expression C#, formule SQL,
   reverse-link, unité, arbre + niveaux), visibilité, labels, import/export, rendu, menus par profil,
@@ -33,6 +33,11 @@ les services internes (`IServiceManager`/`IRepositoryManager`), puis on les **in
 >   (seed `McpCreateFunction` à créer manuellement + code complet des helpers récents + procédure).
 > - `references/vpsoft-source-extracts.md` — **digest synthétisé du code source VPSoft** (enums + logique
 >   décisive des méthodes citées en `fichier:ligne`), pour comprendre le *pourquoi* sans le dépôt.
+> - `references/PORT-DynamicPages-AGLX.md` — **VALIDÉ 2026-09** : **porter du code de DynamicPage entre
+>   instances**. Méthode PRÉFÉRÉE (`McpUpdateDynamicPageCode` en texte brut appelée depuis le navigateur),
+>   route native **AGLX** testée (API export/import, granularité module vs import sélectif jusqu'à la
+>   propriété, 8,4 Mo/module, aucun contrôle de version), **anti-pattern des chunks base64 recopiés par un
+>   LLM**, piège du boot DOM des pages pleines, adaptations de champs 10.4→10.5.
 > - `references/CODE-DynamicPages-VPFramework.md` — **code dynamique PROPRE** : surface d'API du
 >   framework **VP C# & VP JS**, contrat EXACT de chaque expression d'entité (variables en scope,
 >   méthode générée), DynamicPage/Widget/PageField (modèle + rendu + création ✅), code global &
@@ -156,8 +161,8 @@ les services internes (`IServiceManager`/`IRepositoryManager`), puis on les **in
 | `McpSetNavMenuIconOrderBulk` | **Icône + ordre** des entrées de menu (`NavMenu.Icon`/`OrderBy`) par Id, en lot — JSON `[{"id","icon","order"}]` (clé absente = inchangée) | Non |
 | `McpAddPageToMenu` | **Ajouter une DynamicPage au menu** d'un module (`NavMenuDynamicPage` via `NavMenuService.ActivateOrCreate`, `MenuType.DynamicPage`=1) + icône/ordre/rôles/nom localisé | Non |
 | `McpSetDynamicPageRoles` | **Rôles d'accès** d'une DynamicPage/widget (`RoleInModules`) — ⚠️ sinon `UnauthorizedAccessException` au chargement hors preview (`McpCreateDynamicPage` ne les pose PAS) | Non |
-| `McpUpdateDynamicPageCode` | **MAJ du code** d'une DynamicPage (`DynamicPageBaseService.SaveCode`) ; ⚠️ `DynamicPageCodeViewModel.GitFileBasePath` est `required` → passer par `GetCode(id)`, pas un `new{}` ; param vide = conservé | Non |
-| `McpSetDynamicPageJsB64` | **Injecter un gros JS** dans une page via **base64** (params `code,b64,reset,finalize` : accumule les chunks puis décode `Convert.FromBase64String`) — contourne l'échappement JSON des gros blocs | Non |
+| `McpUpdateDynamicPageCode` | ⭐ **VOIE PRÉFÉRÉE — MAJ du code d'une DynamicPage en TEXTE BRUT**, à appeler **depuis le navigateur** avec le contenu de fichiers locaux (cf. `references/PORT-DynamicPages-AGLX.md` §2) ; ⚠️ `DynamicPageCodeViewModel.GitFileBasePath` est `required` → passer par `GetCode(id)`, pas un `new{}` ; param vide = conservé | Non |
+| `McpSetDynamicPageJsB64` | ⚠️ **NE PLUS UTILISER pour un transfert piloté par un LLM** (cf. §6) — préférer `McpUpdateDynamicPageCode` depuis le navigateur. Injecte un gros JS via **base64** (params `code,b64,reset,finalize` : accumule les chunks puis décode `Convert.FromBase64String`) — contourne l'échappement JSON des gros blocs | Non |
 | `BdgCreate` (générique) | **Créer une entité dynamique AVEC références** (params `entityName, fieldsJson` ; réflexion + NHibernate : enum→`Enum.ToObject(int)`, réf→chargée par `Code`, décimal/date castés, Code auto, audit) — à appeler côté page via `VP.Functions.Invoke` ⚠️ car `VP.Entities.Create` (endpoint V2) ne sait PAS lier les références | Non |
 
 > **Autres fonctions présentes en base** (variantes/diagnostic, non détaillées ici) : `McpBuildAsync`/`McpBuildStatus`
@@ -249,6 +254,21 @@ Rendre un objet « visible » = plusieurs leviers **indépendants** :
 
 ## 6. Gotchas catalogués (issus de vrais incidents)
 
+- ⚠️ **NE JAMAIS faire recopier un payload (base64 ou texte) par un LLM/sous-agent** pour remplir un slot de
+  code : il perd/ajoute des caractères et réduire les chunks **ne converge pas** (6000 → 2000 → 20 car.,
+  **138 appels, ~70 min, jamais abouti** — vécu 2026-09). Les octets doivent aller **disque → navigateur →
+  serveur** : `McpUpdateDynamicPageCode` appelée depuis la page via `VP.Functions.Invoke` (**9 slots en 0,5 s**).
+  Détail : `references/PORT-DynamicPages-AGLX.md`.
+- ⚠️ **`window.VP` est `undefined`** dans une page VPSoft alors que **`VP` nu existe** (binding global du
+  bundle) → toujours tester/appeler `VP` nu, sinon faux négatif « VP absent ».
+- ⚠️ **`System.IO.Compression` (GZipStream) n'est PAS résolvable** en compilation à chaud des
+  DynamicFunction → retour `null` **muet**. Idem un bloc `using (var h = SHA256.Create()){}` (instancier sans `using`).
+- ⚠️ **Une page pleine (via menu) exécute son script AVANT que le DOM soit prêt** : un
+  `getElementById(...).addEventListener` **non gardé** lève et **annule TOUS les bindings suivants**
+  (symptôme : boutons inertes, souvent **sans erreur visible** en console) → envelopper l'init dans un boot
+  `DOMContentLoaded` + attente de l'élément clé.
+- ⚠️ **Une sonde SQL cross-base (`sys.databases`) dans un prompt de sous-agent est bloquée par le
+  classifieur de sécurité** : l'agent meurt et le travail est à relancer. S'en passer.
 - **Référence en `create_entity`** : passer le champ **directement = code** (`{"Vehicule":"DEMO-EXPR2"}`),
   **pas** le suffixe `_Code_` (resté `null`).
 - **`update_entity_patch` peut renvoyer 500** sur une entité avec **reverse-link** : cause racine = **référence
@@ -549,9 +569,11 @@ L'essentiel à savoir sans ouvrir la référence :
     `(function boot(){ if(typeof VP==="undefined"||!VP.Entities){setTimeout(boot,50);return;} init(); })()`.
     (Les widgets de carte n'ont pas ce souci : chargés en AJAX après `VP`.)
   - **Menu** : `McpAddPageToMenu(pageCode, moduleId, name, label, icon, order, roleCodesCsv)` (`MenuType.DynamicPage`).
-  - **Gros JS/CSS** : l'échappement JSON d'un gros bloc est fragile → **`McpSetDynamicPageJsB64`** (base64 par chunks
-    `reset`/`finalize`) ; MAJ ciblée → **`McpUpdateDynamicPageCode`** (param vide = conservé). Toujours `node --check` le JS
-    en local + `McpRenderDynamicPage` après (le rendu inclut le JS verbatim, ne l'exécute pas).
+  - **Gros JS/CSS** ⇒ ⭐ **`McpUpdateDynamicPageCode` en TEXTE BRUT, appelée DEPUIS LE NAVIGATEUR** avec le contenu
+    de fichiers locaux (`<input type=file>` injecté → `file.text()` → `VP.Functions.Invoke`) : c'est le navigateur qui
+    fait l'échappement JSON, donc **aucun base64 nécessaire**. ❌ **NE PAS** faire recopier des chunks base64 par un
+    LLM (`McpSetDynamicPageJsB64`) : anti-pattern, ne converge pas (cf. §6 et `references/PORT-DynamicPages-AGLX.md`).
+    Toujours `node --check` le JS en local + `McpRenderDynamicPage` après (le rendu inclut le JS verbatim, ne l'exécute pas).
 - **Code global / code global module** = `DynamicGlobalCode` (`DynamicModule null` = app ; sinon module).
   Injecté sur TOUTES les pages du layout dynamique : CSS dans le head, Razor avant le body
   (`@Model` inutilisable → utiliser `VP.*`), JS en fin de scripts ; CSS/JS servis en fichiers virtuels
@@ -646,3 +668,20 @@ L'essentiel :
 - **Aides** : `McpCreateOnlineHelp(entity, titre, aideListe, aideCreate, aideEdit, aideDetail,
   rolesCsv, vue)` — `HelpOnline`, 4 contextes localisés. ⚠️ 1 seule aide par entité+vue+contexte+rôle
   (visibilité testée par `count == 1`). ✅
+
+## 14. Porter du code de DynamicPage entre instances (10.4 → 10.5, etc.)
+
+**Doc complète : `references/PORT-DynamicPages-AGLX.md`** (validé sur le portage FIB 10.4 → `FIB_INSPECTION` 10.5).
+
+- **Règle d'or : qui transporte les octets ?** Un LLM n'est pas un canal binaire. Le helper serveur n'est jamais
+  le goulot — le canal l'est.
+- **Push ciblé de quelques pages ⇒ `McpUpdateDynamicPageCode` (texte brut) DEPUIS LE NAVIGATEUR** : fichiers
+  locaux → `<input type=file>` injecté → `file.text()` → `VP.Functions.Invoke`. Puis `McpRenderDynamicPage` + test visuel.
+- **Portage d'un module entier / mise en prod ⇒ route native AGLX** : `sm.AglxMainService.Export` / `ExportAsFile`
+  (.aglx = ZIP) + preview du diff + `Import` avec **backup et logs**. L'AGLX porte le code **ET** les rôles
+  (`RoleInModuleAglxIds`), le dossier et les libellés localisés. ⚠️ export **par module** (8,4 Mo pour Portfolio)
+  mais **import sélectif jusqu'à la propriété** (`ModuleTargets`→`SelectedTargets`→`SelectedProperties`) ;
+  `ModuleIds` = **AglxId** ≠ Id d'entité ; **aucun contrôle de `SourceVersion`** (10.4→10.5 ni bloqué ni protégé) ;
+  `Import` exige un `IFormFile` ⇒ opération UI, pas pur MCP. Sonde : `McpAglxExportProbe(mode, moduleAglxIds)`.
+- **Après tout portage** : vérifier le **boot DOM** des pages pleines et réaligner les `grid-template-columns`
+  si un enfant de grille a été supprimé.
